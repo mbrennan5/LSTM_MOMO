@@ -656,23 +656,6 @@ def generate_momentum_features(df):
               .fillna(0))
 
 
-# ── Top-level worker for ProcessPoolExecutor (must be picklable) ───────────────
-def _process_symbol_worker(args):
-    symbol, raw_dict = args
-    try:
-        raw_df = pd.DataFrame(raw_dict)
-        raw_df.index = pd.to_datetime(raw_df.index)
-        if len(raw_df) < 260:          # need 252 bars for GARR_252
-            return None
-        processed = generate_momentum_features(raw_df)
-        if processed.empty:
-            return None
-        processed['symbol'] = symbol
-        return processed.reset_index()
-    except Exception as e:
-        return None
-
-
 # ==============================================================================
 # ### BLOCK 4: PARALLEL LOADER
 # ==============================================================================
@@ -689,12 +672,31 @@ def fetch_data(symbol):
         return None
 
 def load_hybrid_data_parallel(brain_name, symbol_list, dl_workers=20):
-    # Guard: fail fast with a clear message if Block 3 didn't finish executing.
-    if '_process_symbol_worker' not in globals():
+    # Guard: generate_momentum_features must exist before we can process symbols.
+    if 'generate_momentum_features' not in globals():
         raise RuntimeError(
-            "❌ _process_symbol_worker is not defined — Block 3 did not finish. "
-            "Re-run the Block 3 cell (generate_momentum_features) before Block 4."
+            "❌ generate_momentum_features is not defined — Block 3 did not "
+            "finish executing. Re-run the Block 3 cell before Block 4."
         )
+
+    # Define the worker as a LOCAL closure so it is always available to
+    # ThreadPoolExecutor regardless of Colab cell execution order.
+    # (ThreadPoolExecutor does not pickle callables, so closures work fine.)
+    def _worker(args):
+        symbol, raw_dict = args
+        try:
+            raw_df = pd.DataFrame(raw_dict)
+            raw_df.index = pd.to_datetime(raw_df.index)
+            if len(raw_df) < 260:
+                return None
+            processed = generate_momentum_features(raw_df)
+            if processed.empty:
+                return None
+            processed['symbol'] = symbol
+            return processed.reset_index()
+        except Exception:
+            return None
+
     print(f"📥 Parallel download: {len(symbol_list)} symbols...")
     raw_results = {}
     with ThreadPoolExecutor(max_workers=dl_workers) as pool:
@@ -710,16 +712,11 @@ def load_hybrid_data_parallel(brain_name, symbol_list, dl_workers=20):
         return pd.DataFrame()
     work_items = [(sym, df.to_dict()) for sym, df in raw_results.items()]
     all_data   = []
-    # ThreadPoolExecutor is used here instead of ProcessPoolExecutor.
-    # Reason: Colab spawns fresh interpreter processes that don't inherit the
-    # notebook's namespace, making _process_symbol_worker unpicklable.
-    # Numba JIT functions release the Python GIL, so threads achieve true
-    # CPU parallelism for the heavy rolling-kernel work — same throughput,
-    # no pickling overhead.
+    # ThreadPoolExecutor: Numba JIT kernels release the GIL, so threads give
+    # true CPU parallelism here — same throughput as processes, no pickling.
     print(f"⚙ Building momentum features (threads={N_FEATURE_WORKERS})...")
     with ThreadPoolExecutor(max_workers=N_FEATURE_WORKERS) as pool:
-        futures = {pool.submit(_process_symbol_worker, item): item[0]
-                   for item in work_items}
+        futures = {pool.submit(_worker, item): item[0] for item in work_items}
         for fut in tqdm(as_completed(futures), total=len(work_items),
                         desc="⚙ Features"):
             try:
