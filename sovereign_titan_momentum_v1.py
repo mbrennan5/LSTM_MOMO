@@ -689,6 +689,12 @@ def fetch_data(symbol):
         return None
 
 def load_hybrid_data_parallel(brain_name, symbol_list, dl_workers=20):
+    # Guard: fail fast with a clear message if Block 3 didn't finish executing.
+    if '_process_symbol_worker' not in globals():
+        raise RuntimeError(
+            "❌ _process_symbol_worker is not defined — Block 3 did not finish. "
+            "Re-run the Block 3 cell (generate_momentum_features) before Block 4."
+        )
     print(f"📥 Parallel download: {len(symbol_list)} symbols...")
     raw_results = {}
     with ThreadPoolExecutor(max_workers=dl_workers) as pool:
@@ -704,24 +710,25 @@ def load_hybrid_data_parallel(brain_name, symbol_list, dl_workers=20):
         return pd.DataFrame()
     work_items = [(sym, df.to_dict()) for sym, df in raw_results.items()]
     all_data   = []
-    print(f"⚙ Building momentum features (workers={N_FEATURE_WORKERS})...")
-    try:
-        with ProcessPoolExecutor(max_workers=N_FEATURE_WORKERS) as pool:
-            futures = {pool.submit(_process_symbol_worker, item): item[0]
-                       for item in work_items}
-            for fut in tqdm(as_completed(futures), total=len(work_items),
-                            desc="⚙ Features"):
+    # ThreadPoolExecutor is used here instead of ProcessPoolExecutor.
+    # Reason: Colab spawns fresh interpreter processes that don't inherit the
+    # notebook's namespace, making _process_symbol_worker unpicklable.
+    # Numba JIT functions release the Python GIL, so threads achieve true
+    # CPU parallelism for the heavy rolling-kernel work — same throughput,
+    # no pickling overhead.
+    print(f"⚙ Building momentum features (threads={N_FEATURE_WORKERS})...")
+    with ThreadPoolExecutor(max_workers=N_FEATURE_WORKERS) as pool:
+        futures = {pool.submit(_process_symbol_worker, item): item[0]
+                   for item in work_items}
+        for fut in tqdm(as_completed(futures), total=len(work_items),
+                        desc="⚙ Features"):
+            try:
                 result = fut.result()
                 if result is not None:
                     result = result.set_index(result.columns[0])
                     all_data.append(result)
-    except Exception as e:
-        print(f"  ⚠️  ProcessPool failed ({e}) — falling back to sequential")
-        for item in tqdm(work_items, desc="⚙ Features (sequential)"):
-            result = _process_symbol_worker(item)
-            if result is not None:
-                result = result.set_index(result.columns[0])
-                all_data.append(result)
+            except Exception as e:
+                print(f"  ⚠️  Symbol failed: {e}")
     if not all_data:
         print("❌ No valid data after feature generation.")
         return pd.DataFrame()
