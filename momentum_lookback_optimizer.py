@@ -66,6 +66,11 @@ from sklearn.decomposition import PCA
 from tqdm.auto import tqdm
 from numba import jit
 from datetime import datetime as _dt
+try:
+    from scipy.signal import welch as _scipy_welch
+    _HAS_SCIPY = True
+except ImportError:
+    _HAS_SCIPY = False
 
 # ── Output directory ───────────────────────────────────────────────────────────
 if IN_COLAB:
@@ -102,41 +107,36 @@ TITAN_SYMBOLS = [
 ]
 
 # ==============================================================================
-# MOMENTUM FEATURE CATALOG
-# (num, internal_key, display_description, family)
+# MOMENTUM FEATURE CATALOG  v2.0
+# (num, internal_key, display_description, pillar)
 #
-# Window notation in descriptions uses indicator_n-derived names:
-#   n_fast  ≈ indicator_n // 4    n_mid  ≈ indicator_n // 2
-#   n_slow  ≈ indicator_n         n_long ≈ indicator_n × 2
-#   n_mem   ≈ indicator_n × 3     (MHL / Hurst memory window)
+# 12 Anchors (A1-A12) + 5 Cross-Domain Ratios (R1-R5) = 17 seeds
+# Pillars: Mismatch (7) | Regime (6) | Structure (4)
+#
+# Window scaling from indicator_n:
+#   n_fast = max(2, n_s // 2)   where n_s = max(5, indicator_n // 2)
+#   n_mid  = max(10, indicator_n)
+#   n_slow = max(10, n_mid + n_s)
+#   n_mem  = max(30, indicator_n * 3)
 # ==============================================================================
 MOMENTUM_FEATURE_CATALOG: list[tuple] = [
-    ( 1, 'ctm',         'Chande Trend Meter  (CTM, 4 BB periods)',         'Trend-Strength'),
-    ( 2, 'rsi',         'RSI  (Wilder, n_fast period)',                    'Oscillator'),
-    ( 3, 'roc_fast',    'ROC Fast   (n_fast bars)',                        'Momentum'),
-    ( 4, 'roc_mid',     'ROC Mid    (n_mid bars)',                         'Momentum'),
-    ( 5, 'roc_slow',    'ROC Slow   (n_slow bars)',                        'Momentum'),
-    ( 6, 'roc_long',    'ROC Long   (n_long bars)',                        'Momentum'),
-    ( 7, 'roc_vlong',   'ROC VLong  (n_vlong = 2×n_long bars)',            'Momentum'),
-    ( 8, 'roc_fast_log','Log-ROC Fast  (n_fast log-return)',               'Momentum'),
-    ( 9, 'roc_mid_log', 'Log-ROC Mid   (n_mid log-return)',                'Momentum'),
-    (10, 'roc_long_log','Log-ROC Long  (n_long log-return)',               'Momentum'),
-    (11, 'mhl',         'Autocorrelation Half-Life  (n_mem window)',       'Memory'),
-    (12, 'hurst_roc',   'Hurst Exponent on ROC R/S  (n_mem window)',       'Memory'),
-    (13, 'garr_ratio',  'GARR Ratio  (n_slow geom / n_annual geom)',       'Momentum'),
-    (14, 'accel_fs',    'ROC Acceleration  fast − slow',                   'Acceleration'),
-    (15, 'accel_fm',    'ROC Acceleration  fast − mid',                    'Acceleration'),
-    (16, 'accel_ms',    'ROC Acceleration  mid  − slow',                   'Acceleration'),
-    (17, 'jerk',        'Momentum Jerk  (Δ accel_fs)',                     'Acceleration'),
-    (18, 'jerk_med',    'Momentum Jerk Medium  (Δ accel_fm)',              'Acceleration'),
-    (19, 'geom_curv',   'Geometric Curvature  κ  (|y′′| / (1+y′²)^1.5)', 'Curvature'),
-    (20, 'quad_gamma',  'Quadratic Curvature  γ  (t² regression coeff)',  'Curvature'),
-    (21, 'lbr_pinball', 'LBR Pinball  (RSI_fast of ROC_fast)',             'Oscillator'),
-    (22, 'phase_wind',  'Phase-Space Winding  W  (price_z × ROC_z)',      'Oscillator'),
-    (23, 'psr',         'Spectral Signature  PSR  (low-freq power ratio)', 'Spectral'),
-    (24, 'mtsi',        'Modified True Strength Index  MTSI-v2',           'Oscillator'),
-    (25, 'dir_persist', 'Directional Persistence  (streak z-score)',       'Memory'),
-    (26, 'rqa_det',     'RQA Determinism  DET  (diagonal recurrence)',     'Structural'),
+    ( 1, 'log_roc_fast',        'Log-space velocity  (n_fast log-return)',          'Mismatch'),
+    ( 2, 'roc_fast',            'Arithmetic velocity  (n_fast pct-change)',         'Mismatch'),
+    ( 3, 'geom_curv',           'Geometric Curvature  κ  (|y′′| / (1+y′²)^1.5)', 'Mismatch'),
+    ( 4, 'rsi',                 'RSI  (Wilder, n_mid period)',                      'Mismatch'),
+    ( 5, 'cpd_score',           'Changepoint Detection Score  ν',                   'Mismatch'),
+    ( 6, 'cmo',                 'CMO  (Chande Momentum Oscillator)',                'Mismatch'),
+    ( 7, 'lbr_pinball',         'LBR Pinball  (RSI of ROC_fast)',                  'Mismatch'),
+    ( 8, 'psr',                 'Spectral Signature  PSR  (Welch low-freq ratio)',  'Regime'),
+    ( 9, 'ctm',                 'Chande Trend Meter  (CTM, 4 BB periods)',          'Regime'),
+    (10, 'octane',              'Octane Oscillator  (up/dn variance asymmetry)',    'Regime'),
+    (11, 'dir_persist',         'Directional Persistence  (streak z-score)',        'Regime'),
+    (12, 'rqa_det',             'RQA Determinism  DET v2  (diagonal runs ≥ 2)',    'Structure'),
+    (13, 'curve_halflife',      'Curve / Half-Life ratio  (geometry × memory)',     'Structure'),
+    (14, 'garr_er',             'GARR / ER  (log-concentration × path efficiency)','Structure'),
+    (15, 'winding_persistence', 'Winding / Persistence  (topology × order)',       'Structure'),
+    (16, 'pinball_garr',        'Pinball / GARR  (oscillator × struct momentum)',  'Mismatch'),
+    (17, 'phase_dist_er',       'Phase Distance / ER  (2-D energy × efficiency)',  'Regime'),
 ]
 
 _MCAT_BY_NUM = {n: (k, d, f) for n, k, d, f in MOMENTUM_FEATURE_CATALOG}
@@ -177,10 +177,8 @@ def parse_selection(raw: str) -> list[str]:
 
 # ==============================================================================
 # BLOCK 2: NUMBA JIT ROLLING KERNELS
-# (trend originals kept for compatibility + all momentum-specific additions)
 # ==============================================================================
 
-# ── Shared with Trend Tester ───────────────────────────────────────────────────
 @jit(nopython=True, cache=True)
 def _lin_slope_nb(y):
     n = len(y)
@@ -225,7 +223,6 @@ def _kalman_numba(price, r=0.0001, q=0.001):
         p[t]  = (1 - k) * pm
     return xh
 
-# ── Momentum-specific additions ────────────────────────────────────────────────
 @jit(nopython=True, cache=True)
 def _rsi_nb(prices, period=14):
     """Wilder's RSI — returns array same length as prices."""
@@ -248,89 +245,6 @@ def _rsi_nb(prices, period=14):
     return rsi
 
 @jit(nopython=True, cache=True)
-def _hurst_rs_nb(y):
-    """Rescaled-range Hurst exponent.  H > 0.5 = persistent momentum."""
-    n = len(y)
-    if n < 8: return 0.5
-    mean = 0.0
-    for i in range(n): mean += y[i]
-    mean /= n
-    cum = cmin = cmax = 0.0
-    for i in range(n):
-        cum += y[i] - mean
-        if cum < cmin: cmin = cum
-        if cum > cmax: cmax = cum
-    R = cmax - cmin
-    var = 0.0
-    for i in range(n): var += (y[i] - mean) ** 2
-    S = (var / n) ** 0.5
-    if S < 1e-12 or R <= 0.0: return 0.5
-    h = np.log(R / S) / np.log(float(n))
-    if h < 0.0 or h > 1.0 or np.isnan(h): return 0.5
-    return h
-
-@jit(nopython=True, cache=True)
-def _rolling_hurst_rs(arr, window):
-    n = len(arr); out = np.full(n, 0.5)
-    for i in range(window - 1, n):
-        out[i] = _hurst_rs_nb(arr[i - window + 1: i + 1])
-    return out
-
-@jit(nopython=True, cache=True)
-def _mhl_nb(y, max_lag=30):
-    """Smallest lag τ where ACF(τ) ≤ 1/e ≈ 0.3679."""
-    n = len(y)
-    if n < 10: return float(max_lag)
-    mean = 0.0
-    for i in range(n): mean += y[i]
-    mean /= n
-    var = 0.0
-    for i in range(n): var += (y[i] - mean) ** 2
-    if var < 1e-10: return float(max_lag)
-    threshold = 1.0 / 2.718281828
-    for lag in range(1, min(max_lag, n // 2) + 1):
-        cov = 0.0
-        for i in range(lag, n):
-            cov += (y[i] - mean) * (y[i - lag] - mean)
-        if cov / var <= threshold:
-            return float(lag)
-    return float(max_lag)
-
-@jit(nopython=True, cache=True)
-def _rolling_mhl(arr, window, max_lag=30):
-    n = len(arr); out = np.full(n, float(max_lag))
-    for i in range(window - 1, n):
-        out[i] = _mhl_nb(arr[i - window + 1: i + 1], max_lag)
-    return out
-
-@jit(nopython=True, cache=True)
-def _rqa_det_nb(y, eps_factor=0.15):
-    """DET = diagonal-line recurrent points / total recurrent points."""
-    n = len(y)
-    if n < 5: return 0.5
-    mean = var = 0.0
-    for i in range(n): mean += y[i]
-    mean /= n
-    for i in range(n): var += (y[i] - mean) ** 2
-    eps = eps_factor * (var / n) ** 0.5
-    if eps < 1e-10: return 0.5
-    total = diag = 0
-    for i in range(n):
-        for j in range(i + 1, n):
-            if abs(y[i] - y[j]) < eps:
-                total += 1
-                if i > 0 and j > 0 and abs(y[i-1] - y[j-1]) < eps:
-                    diag += 1
-    return diag / total if total > 0 else 0.0
-
-@jit(nopython=True, cache=True)
-def _rolling_rqa_det(arr, window):
-    n = len(arr); out = np.full(n, 0.5)
-    for i in range(window - 1, n):
-        out[i] = _rqa_det_nb(arr[i - window + 1: i + 1])
-    return out
-
-@jit(nopython=True, cache=True)
 def _rolling_geom_curv(velocity, acceleration):
     """κ = |y''| / (1 + y'²)^1.5  element-wise."""
     n = len(velocity); out = np.zeros(n)
@@ -340,88 +254,84 @@ def _rolling_geom_curv(velocity, acceleration):
     return out
 
 @jit(nopython=True, cache=True)
-def _quad_gamma_nb(y):
-    """OLS coefficient of t² when regressing y on [1, t, t²]."""
-    n = len(y)
-    if n < 6: return 0.0
-    s1=st=st2=st3=st4=sy=sty=st2y=0.0
-    for i in range(n):
-        t=float(i); t2=t*t
-        s1+=1.0; st+=t; st2+=t2; st3+=t2*t; st4+=t2*t2
-        sy+=y[i]; sty+=t*y[i]; st2y+=t2*y[i]
-    A = np.zeros((3, 4))
-    A[0,0]=s1;  A[0,1]=st;  A[0,2]=st2; A[0,3]=sy
-    A[1,0]=st;  A[1,1]=st2; A[1,2]=st3; A[1,3]=sty
-    A[2,0]=st2; A[2,1]=st3; A[2,2]=st4; A[2,3]=st2y
-    for col in range(3):
-        max_val=abs(A[col,col]); max_row=col
-        for row in range(col+1, 3):
-            if abs(A[row,col]) > max_val:
-                max_val=abs(A[row,col]); max_row=row
-        if max_row != col:
-            for k in range(4):
-                tmp=A[col,k]; A[col,k]=A[max_row,k]; A[max_row,k]=tmp
-        if abs(A[col,col]) < 1e-12: return 0.0
-        for row in range(col+1, 3):
-            f=A[row,col]/A[col,col]
-            for k in range(col, 4):
-                A[row,k]-=f*A[col,k]
-    x=np.zeros(3)
-    for i in range(2,-1,-1):
-        x[i]=A[i,3]
-        for j in range(i+1, 3):
-            x[i]-=A[i,j]*x[j]
-        x[i]/=A[i,i] if abs(A[i,i]) > 1e-12 else 1.0
-    return x[2]
-
-@jit(nopython=True, cache=True)
-def _rolling_quad_gamma(arr, window):
-    n = len(arr); out = np.full(n, 0.0)
-    for i in range(window - 1, n):
-        out[i] = _quad_gamma_nb(arr[i - window + 1: i + 1])
-    return out
-
-@jit(nopython=True, cache=True)
 def _winding_nb(x_z, y_z):
     """Winding number W = Σ Δθ / 2π  in (price_z, roc_z) phase space."""
-    n=len(x_z)
+    n = len(x_z)
     if n < 3: return 0.0
-    total=0.0; pi2=2.0*3.141592653589793
+    total = 0.0; pi2 = 2.0 * 3.141592653589793
     for i in range(1, n):
-        dt=np.arctan2(y_z[i],x_z[i])-np.arctan2(y_z[i-1],x_z[i-1])
+        dt = np.arctan2(y_z[i], x_z[i]) - np.arctan2(y_z[i-1], x_z[i-1])
         while dt >  3.141592653589793: dt -= pi2
         while dt < -3.141592653589793: dt += pi2
         total += dt
-    return total/pi2
+    return total / pi2
 
 @jit(nopython=True, cache=True)
 def _rolling_phase_winding(price_z, roc_z, window):
-    n=len(price_z); out=np.full(n,0.0)
-    for i in range(window-1, n):
-        out[i]=_winding_nb(price_z[i-window+1:i+1], roc_z[i-window+1:i+1])
+    n = len(price_z); out = np.full(n, 0.0)
+    for i in range(window - 1, n):
+        out[i] = _winding_nb(price_z[i-window+1:i+1], roc_z[i-window+1:i+1])
     return out
 
 @jit(nopython=True, cache=True)
 def _streak_zscore(returns, window):
     """Consecutive same-sign bars → z-score vs rolling history."""
-    n=len(returns); streaks=np.zeros(n); out=np.zeros(n)
-    s=1
+    n = len(returns); streaks = np.zeros(n); out = np.zeros(n)
+    s = 1
     for i in range(n):
-        if i==0: s=1
+        if i == 0: s = 1
         else:
-            ps=1 if returns[i-1]>0 else (-1 if returns[i-1]<0 else 0)
-            cs=1 if returns[i]  >0 else (-1 if returns[i]  <0 else 0)
-            s = s+1 if (cs!=0 and cs==ps) else 1
-        streaks[i]=float(s)
-    for i in range(window-1, n):
-        w=streaks[i-window+1:i+1]
-        mean=0.0
-        for v in w: mean+=v
-        mean/=window
-        var=0.0
-        for v in w: var+=(v-mean)**2
-        std=(var/window)**0.5
-        out[i]=(streaks[i]-mean)/(std+1e-9)
+            ps = 1 if returns[i-1] > 0 else (-1 if returns[i-1] < 0 else 0)
+            cs = 1 if returns[i]   > 0 else (-1 if returns[i]   < 0 else 0)
+            s  = s + 1 if (cs != 0 and cs == ps) else 1
+        streaks[i] = float(s)
+    for i in range(window - 1, n):
+        w = streaks[i - window + 1: i + 1]
+        mean = 0.0
+        for v in w: mean += v
+        mean /= window
+        var = 0.0
+        for v in w: var += (v - mean) ** 2
+        std = (var / window) ** 0.5
+        out[i] = (streaks[i] - mean) / (std + 1e-9)
+    return out
+
+# ── RQA Determinism v2 — diagonal lines of length ≥ 2 ────────────────────────
+@jit(nopython=True, cache=True)
+def _rqa_det_v2_nb(y, eps_factor=0.15):
+    """DET = diagonal-line points (run ≥ 2) / total recurrent pairs (i≠j)."""
+    n = len(y)
+    if n < 5: return 0.0
+    mean = 0.0
+    for i in range(n): mean += y[i]
+    mean /= n
+    var = 0.0
+    for i in range(n): var += (y[i] - mean) ** 2
+    eps = eps_factor * (var / n) ** 0.5
+    if eps < 1e-10: return 0.0
+    total = 0
+    for i in range(n):
+        for j in range(n):
+            if i != j and abs(y[i] - y[j]) < eps:
+                total += 1
+    if total == 0: return 0.0
+    diag_pts = 0
+    for k in range(1, n):
+        run_len = 0
+        for i in range(n - k):
+            if abs(y[i] - y[i + k]) < eps:
+                run_len += 1
+            else:
+                if run_len >= 2: diag_pts += run_len
+                run_len = 0
+        if run_len >= 2: diag_pts += run_len
+    return float(diag_pts) / float(total)
+
+@jit(nopython=True, cache=True)
+def _rolling_rqa_det_v2(arr, window, eps_factor=0.15):
+    n = len(arr); out = np.full(n, 0.0)
+    for i in range(window - 1, n):
+        out[i] = _rqa_det_v2_nb(arr[i - window + 1: i + 1], eps_factor)
     return out
 
 
@@ -429,62 +339,48 @@ def _warm_up_numba():
     d  = np.random.randn(120).astype(np.float64)
     d2 = np.random.randn(120).astype(np.float64)
     _rolling_linslope(d, 10);  _rolling_wma(d, 10); _kalman_numba(d)
-    _rsi_nb(d, 14);            _rolling_hurst_rs(d, 40)
-    _rolling_mhl(d, 63);       _rolling_rqa_det(d, 40)
-    _rolling_geom_curv(d, d2); _rolling_quad_gamma(d, 30)
-    _rolling_phase_winding(d, d2, 20); _streak_zscore(d, 30)
+    _rsi_nb(d, 14)
+    _rolling_geom_curv(d, d2); _rolling_phase_winding(d, d2, 20)
+    _streak_zscore(d, 30);     _rolling_rqa_det_v2(d, 25)
     print("✅ Numba momentum kernels compiled and ready")
 
 _warm_up_numba()
 
 
 # ==============================================================================
-# BLOCK 3: PARAMETERISED MOMENTUM FEATURE FACTORY
+# BLOCK 3: PARAMETERISED MOMENTUM FEATURE FACTORY  v2.0
 #
-# indicator_n  — primary lookback; all momentum windows scale from this:
-#     n_s     = max(5,   indicator_n // 2)   short
-#     n_m     = max(10,  indicator_n)         medium / primary
-#     n_l     = max(20,  indicator_n * 2)     long
-#     n_xl    = max(30,  indicator_n * 3)     extra-long / memory
+# 17 seeds: 12 Anchors (A1-A12) + 5 Cross-Domain Ratios (R1-R5)
+# Each selected seed → LENS_{z_n}_{name}_{z, z_slope, z_sos}
+# Total LENS columns = len(selected_features) * 3  (no WIN columns)
 #
-#     Derived windows (all clamped to sensible minimums):
-#       n_roc_fast  = max(2,   n_s // 2)       ~2 bars
-#       n_roc_mid   = max(3,   n_s)             ~5 bars
-#       n_roc_slow  = max(7,   n_m // 2)        ~7-10 bars
-#       n_roc_long  = max(21,  n_m)             ~20 bars
-#       n_roc_vlong = max(30,  n_l)             ~40 bars
-#       n_rsi       = max(3,   n_s)             RSI period
-#       n_mem       = max(30,  n_xl)            MHL / Hurst window
-#       n_garr_s    = max(21,  n_m)             GARR short (≈1 month)
-#       n_garr_l    = max(252, n_m * 12)        GARR long  (≈1 year)
-#       n_accel_f   = max(7,   n_m // 3)        Accel fast ROC
-#       n_accel_m   = max(14,  n_m // 2)        Accel mid  ROC
-#       n_accel_s   = max(21,  n_m)             Accel slow ROC
-#       n_quad      = max(60,  n_xl * 2)        Quadratic gamma window
-#       n_rqa       = max(20,  n_l)             RQA Determinism window
-#       n_psr       = max(63,  n_l * 2)         PSR spectral window
-#       n_streak    = max(30,  n_xl)            Directional persistence
-#       n_phase     = max(10,  n_s)             Phase-space winding
+# indicator_n  — primary lookback; scales all momentum windows:
+#   n_s    = max(5,  indicator_n // 2)
+#   n_fast = max(2,  n_s // 2)       ~3  at indicator_n=14
+#   n_mid  = max(10, indicator_n)     =   indicator_n
+#   n_slow = max(10, n_mid + n_s)    ~21 at indicator_n=14
+#   n_mem  = max(30, indicator_n*3)  ~63 at indicator_n=21
 #
-# z_n          — the SINGLE lens window (replaces fixed LENS_10 / LENS_90).
-#                Each selected feature gets z, z_slope, z_sos columns.
-#
-# selected_features — list of keys from MOMENTUM_FEATURE_CATALOG.
-#                     All intermediates are computed; only selected seeds
-#                     enter the Z-lens pipeline.
+# z_n          — single lens window; bounded seeds use rolling pct-rank
+# BOUNDED      = {rsi, cmo, lbr_pinball, octane, dir_persist}
 # ==============================================================================
 
-def _psr_numpy(roc_arr, window=126, f_low_period=63):
-    """Power Spectral Ratio: fraction of power at f ≤ 1/f_low_period."""
+def _psr_welch(roc_arr: np.ndarray, window: int, f_low_period: int) -> np.ndarray:
+    """Power Spectral Ratio via Welch PSD. Falls back to numpy FFT if scipy absent."""
     n = len(roc_arr); out = np.full(n, np.nan)
     f_low = 1.0 / f_low_period
     for i in range(window - 1, n):
-        seg  = roc_arr[i - window + 1: i + 1]
-        seg  = seg - seg.mean()
-        psd  = np.abs(np.fft.rfft(seg)) ** 2
-        freqs = np.fft.rfftfreq(window)
-        total = psd.sum()
-        out[i] = psd[freqs <= f_low].sum() / total if total > 1e-12 else 0.5
+        seg = roc_arr[i - window + 1: i + 1].copy()
+        seg -= seg.mean()
+        if np.std(seg) < 1e-10:
+            out[i] = 0.5; continue
+        if _HAS_SCIPY:
+            f, psd = _scipy_welch(seg, nperseg=len(seg), noverlap=0)
+        else:
+            psd = np.abs(np.fft.rfft(seg)) ** 2
+            f   = np.fft.rfftfreq(len(seg))
+        total  = psd.sum()
+        out[i] = psd[f <= f_low].sum() / total if total > 1e-12 else 0.5
     return out
 
 
@@ -493,228 +389,210 @@ def generate_momentum_features_v2(df: pd.DataFrame,
                                    z_n: int = 20,
                                    selected_features: list | None = None
                                    ) -> pd.DataFrame:
+    """
+    Generate 17-seed momentum features (12 anchors + 5 ratios).
+    Each selected seed → z / z_slope / z_sos via single z_n lens.
+    Total LENS columns = len(selected_features) * 3.
+    """
     if selected_features is None:
         selected_features = ALL_MOMENTUM_KEYS
     sel = set(selected_features)
 
     df = df.copy()
-    df['hlc3']    = (df['high'] + df['low'] + df['close']) / 3
     df['T_FINAL'] = np.where(df['close'].shift(-1) > df['close'], 1, 0)
 
     cl  = df['close'].values.astype(np.float64)
     hi  = df['high'].values.astype(np.float64)
     lo  = df['low'].values.astype(np.float64)
-    vol = df['volume'].values.astype(np.float64)
     idx = df.index
     n   = len(cl)
 
-    # ── Window family ──────────────────────────────────────────────────────────
-    n_s  = max(5,  indicator_n // 2)
-    n_m  = max(10, indicator_n)
-    n_l  = max(20, indicator_n * 2)
-    n_xl = max(30, indicator_n * 3)
+    # ── Window scaling ─────────────────────────────────────────────────────────
+    n_s    = max(5,  indicator_n // 2)
+    n_fast = max(2,  n_s // 2)          # ~3  at indicator_n=14
+    n_mid  = max(10, indicator_n)        # = indicator_n
+    n_slow = max(10, n_mid + n_s)        # ~21 at indicator_n=14
+    n_mem  = max(30, indicator_n * 3)    # ~63 at indicator_n=21
 
-    n_roc_fast  = max(2,  n_s // 2)
-    n_roc_mid   = max(3,  n_s)
-    n_roc_slow  = max(7,  n_m // 2)
-    n_roc_long  = max(21, n_m)
-    n_roc_vlong = max(30, n_l)
-    n_rsi       = max(3,  n_s)
-    n_mem       = max(30, n_xl)
-    n_garr_s    = max(21, n_m)
-    n_garr_l    = max(252, n_m * 12)
-    n_accel_f   = max(7,  n_m // 3)
-    n_accel_m   = max(14, n_m // 2)
-    n_accel_s   = max(21, n_m)
-    n_quad      = max(60, n_xl * 2)
-    n_rqa       = max(20, n_l)
-    n_psr       = max(63, n_l * 2)
-    n_streak    = max(30, n_xl)
-    n_phase     = max(10, n_s)
+    BOUNDED = {'rsi', 'cmo', 'lbr_pinball', 'octane', 'dir_persist'}
 
-    cl_s  = pd.Series(cl,  index=idx)
-    hi_s  = pd.Series(hi,  index=idx)
-    lo_s  = pd.Series(lo,  index=idx)
-    vol_s = pd.Series(vol, index=idx)
+    cl_s = pd.Series(cl, index=idx)
+    hi_s = pd.Series(hi, index=idx)
+    lo_s = pd.Series(lo, index=idx)
 
-    # ── 1. CTM — Chande Trend Meter ────────────────────────────────────────────
-    ctm_p1 = max(20,  indicator_n)
-    ctm_p2 = max(50,  indicator_n * 3)
-    ctm_p3 = max(75,  indicator_n * 4)
-    ctm_p4 = max(100, indicator_n * 5)
+    # ==========================================================================
+    # ANCHORS (A1-A12)
+    # ==========================================================================
 
-    ctm_raw = np.zeros(n)
-    for period in [ctm_p1, ctm_p2, ctm_p3, ctm_p4]:
-        for arr_s, arr_v in [(cl_s, cl), (hi_s, hi), (lo_s, lo)]:
-            sma  = arr_s.rolling(period).mean().values
-            std  = arr_s.rolling(period).std().values
-            upper = sma + 2 * std; lower = sma - 2 * std
-            ctm_raw += (arr_v - lower) / (upper - lower + 1e-9) * 10
+    # A1. Log-space velocity
+    log_roc_fast = np.log(cl_s / cl_s.shift(n_fast)).fillna(0).values
 
-    ctm_base = max(ctm_p4, 100)
-    sma_base = cl_s.rolling(ctm_base).mean().values
-    std_base = cl_s.rolling(ctm_base).std().values
-    ctm_raw += (cl - sma_base) / (std_base + 1e-9) * 10
+    # A2. Arithmetic velocity
+    roc_fast = cl_s.pct_change(n_fast).fillna(0).values * 100
 
-    rsi_ctm = _rsi_nb(cl, n_rsi)
-    ctm_raw += rsi_ctm / 10.0
-
-    lo2 = lo_s.rolling(2).min().values
-    hi2 = hi_s.rolling(2).max().values
-    ctm_raw += (cl - lo2) / (hi2 - lo2 + 1e-9) * 10
-
-    ctm_s    = pd.Series(ctm_raw, index=idx)
-    roll_min = ctm_s.rolling(min(252, n), min_periods=1).min().values
-    roll_max = ctm_s.rolling(min(252, n), min_periods=1).max().values
-    ctm      = (ctm_raw - roll_min) / (roll_max - roll_min + 1e-9) * 100
-
-    # ── 2. RSI ─────────────────────────────────────────────────────────────────
-    rsi_arr = _rsi_nb(cl, n_rsi)
-
-    # ── ROC family ─────────────────────────────────────────────────────────────
-    def _roc(p): return cl_s.pct_change(p).fillna(0).values * 100
-
-    roc_fast  = _roc(n_roc_fast)
-    roc_mid   = _roc(n_roc_mid)
-    roc_slow  = _roc(n_roc_slow)
-    roc_long  = _roc(n_roc_long)
-    roc_vlong = _roc(n_roc_vlong)
-
-    log_cl       = np.log(cl + 1e-9)
-    def _log_roc(p):
-        return np.diff(log_cl, n=p, prepend=[log_cl[0]] * p)
-
-    roc_fast_log  = _log_roc(n_roc_fast)
-    roc_mid_log   = _log_roc(n_roc_mid)
-    roc_long_log  = _log_roc(n_roc_long)
-
-    # ── 3. MHL ─────────────────────────────────────────────────────────────────
-    mhl = _rolling_mhl(roc_mid, window=n_mem, max_lag=max(15, n_mem // 3))
-
-    # ── 4. Hurst on ROC ────────────────────────────────────────────────────────
-    hurst_roc = _rolling_hurst_rs(roc_mid, window=n_mem)
-
-    # ── 5. GARR ratio ──────────────────────────────────────────────────────────
-    log_ret   = np.log(cl_s / cl_s.shift(1)).fillna(0)
-    garr_s    = log_ret.rolling(n_garr_s).mean().apply(np.exp) - 1
-    garr_l    = log_ret.rolling(n_garr_l).mean().apply(np.exp) - 1
-    garr_ratio = (garr_s / (garr_l.abs() + 1e-9) *
-                  garr_l.apply(np.sign)).values
-
-    # ── 6. ROC Acceleration & Jerk ─────────────────────────────────────────────
-    roc_acf = cl_s.pct_change(n_accel_f).fillna(0).values * 100
-    roc_acm = cl_s.pct_change(n_accel_m).fillna(0).values * 100
-    roc_acs = cl_s.pct_change(n_accel_s).fillna(0).values * 100
-
-    accel_fs  = roc_acf - roc_acs
-    accel_fm  = roc_acf - roc_acm
-    accel_ms  = roc_acm - roc_acs
-    jerk      = np.diff(accel_fs, prepend=accel_fs[0])
-    jerk_med  = np.diff(accel_fm, prepend=accel_fm[0])
-
-    # ── 7. Geometric Curvature κ ───────────────────────────────────────────────
+    # A3. Geometric curvature  κ = |a| / (1 + v²)^1.5
     velocity     = np.diff(cl, prepend=cl[0]) / (cl + 1e-9)
     acceleration = np.diff(velocity, prepend=velocity[0])
     geom_curv    = _rolling_geom_curv(velocity, acceleration)
 
-    # ── 8. Quadratic Curvature γ ───────────────────────────────────────────────
-    daily_ret  = np.diff(cl, prepend=cl[0]) / (cl + 1e-9)
-    quad_gamma = _rolling_quad_gamma(daily_ret, window=n_quad)
+    # A4. Spectral Signature PSR  (Welch on 1-bar ROC stream, n_mem window)
+    roc_1 = cl_s.pct_change(1).fillna(0).values.astype(np.float64)
+    psr   = np.nan_to_num(_psr_welch(roc_1, window=n_mem, f_low_period=n_mem), nan=0.5)
 
-    # ── 9. LBR Pinball — RSI_fast of ROC_fast ─────────────────────────────────
-    lbr_roc_input = cl_s.pct_change(n_roc_fast).fillna(0).values * 100
-    lbr_pinball   = _rsi_nb(lbr_roc_input, period=max(3, n_rsi // 2))
+    # A5. RQA Determinism v2  (diagonal runs ≥ 2, max(25, n_mem) window)
+    rqa_det = _rolling_rqa_det_v2(roc_1, max(25, n_mem), 0.15)
 
-    # ── 10. Phase-Space Winding ────────────────────────────────────────────────
-    def _zscore_roll(arr, w):
-        s = pd.Series(arr, index=idx)
-        rm = s.rolling(w).mean().values
-        rs = s.rolling(w).std().values
-        return (arr - rm) / (rs + 1e-9)
+    # A6. RSI — Wilder (n_mid period)
+    delta    = cl_s.diff()
+    gain     = delta.where(delta > 0, 0.0)
+    loss     = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1.0 / n_mid, min_periods=n_mid).mean()
+    avg_loss = loss.ewm(alpha=1.0 / n_mid, min_periods=n_mid).mean()
+    rsi      = (100 - (100 / (1 + avg_gain / (avg_loss + 1e-9)))).values
 
-    price_z = _zscore_roll(cl,        n_phase).astype(np.float64)
-    roc_z   = _zscore_roll(roc_mid,   n_phase).astype(np.float64)
-    phase_wind = _rolling_phase_winding(price_z, roc_z, window=n_phase)
+    # A7. Chande Trend Meter (CTM, 4 BB periods scaled to indicator_n)
+    def _pct_b(series, period):
+        mid = series.rolling(period).mean()
+        std = series.rolling(period).std()
+        return ((series - (mid - 2*std)) / (4*std + 1e-9)) * 10
 
-    # ── 11. PSR — Power Spectral Ratio ─────────────────────────────────────────
-    psr = _psr_numpy(roc_mid, window=n_psr, f_low_period=max(10, n_psr // 2))
-    psr = np.nan_to_num(psr, nan=0.5)
+    ctm_p1 = max(20,  indicator_n)
+    ctm_p2 = max(50,  indicator_n * 3)
+    ctm_p3 = max(75,  indicator_n * 4)
+    ctm_p4 = max(100, indicator_n * 5)
+    ctm_raw = np.zeros(n)
+    for p in [ctm_p1, ctm_p2, ctm_p3, ctm_p4]:
+        for s in [cl_s, hi_s, lo_s]:
+            ctm_raw += _pct_b(s, p).values
+    ctm_raw += ((cl_s - cl_s.rolling(ctm_p4).mean()) /
+                (cl_s.rolling(ctm_p4).std() + 1e-9) * 10).values
+    ctm_raw += (cl_s.diff().gt(0).rolling(n_mid).mean() * 100 / 10).values
+    chan_range = hi_s.rolling(ctm_p1).max() - lo_s.rolling(ctm_p1).min()
+    ctm_raw   += ((cl_s - lo_s.rolling(ctm_p1).min()) /
+                  (chan_range + 1e-9) * 10).values
+    ctm = ctm_raw  # triple lens normalises; no min-max rescale needed
 
-    # ── 12. MTSI-v2 ────────────────────────────────────────────────────────────
-    tp_v         = pd.Series(cl * vol, index=idx)
-    vwap_2       = (tp_v.rolling(2).sum() / (vol_s.rolling(2).sum() + 1e-9)).values
-    diff_mtsi    = np.log(cl / (np.abs(vwap_2) + 1e-9))
-    diff_s       = pd.Series(diff_mtsi, index=idx)
-    abs_diff_s   = pd.Series(np.abs(diff_mtsi), index=idx)
-    dbl_diff     = diff_s.ewm(span=3, adjust=False).mean().ewm(span=2, adjust=False).mean()
-    dbl_abs_diff = abs_diff_s.ewm(span=3, adjust=False).mean().ewm(span=2, adjust=False).mean()
-    mtsi         = (100.0 * dbl_diff / (dbl_abs_diff + 1e-9)).values
+    # A8. Octane Oscillator — volatility asymmetry  [-1, +1]
+    log_ret = np.log(cl_s / cl_s.shift(1)).fillna(0)
+    up_var  = log_ret.where(log_ret > 0, 0.0).rolling(n_slow).var().values
+    dn_var  = log_ret.where(log_ret < 0, 0.0).rolling(n_slow).var().values
+    octane  = (up_var - dn_var) / (up_var + dn_var + 1e-10)
 
-    # ── 13. Directional Persistence ────────────────────────────────────────────
-    dir_persist = _streak_zscore(daily_ret, window=n_streak)
+    # A9. Changepoint Detection Score  ν
+    mu_short  = log_ret.rolling(n_fast).mean().values
+    mu_long   = log_ret.rolling(n_slow).mean().values
+    sig_long  = log_ret.rolling(n_slow).std().values
+    cpd_score = (mu_short - mu_long) / (sig_long + 1e-10)
 
-    # ── 14. RQA Determinism ────────────────────────────────────────────────────
-    rqa_det = _rolling_rqa_det(roc_mid, window=n_rqa)
+    # A10. Directional Persistence — streak z-score (n_mem window)
+    daily_ret   = np.diff(cl, prepend=cl[0]) / (cl + 1e-9)
+    dir_persist = _streak_zscore(daily_ret, n_mem)
 
-    # ── Seed dictionary ────────────────────────────────────────────────────────
-    SEEDS: dict[str, pd.Series] = {
-        'ctm':          pd.Series(ctm,          index=idx),
-        'rsi':          pd.Series(rsi_arr,       index=idx),
-        'roc_fast':     pd.Series(roc_fast,      index=idx),
-        'roc_mid':      pd.Series(roc_mid,       index=idx),
-        'roc_slow':     pd.Series(roc_slow,      index=idx),
-        'roc_long':     pd.Series(roc_long,      index=idx),
-        'roc_vlong':    pd.Series(roc_vlong,     index=idx),
-        'roc_fast_log': pd.Series(roc_fast_log,  index=idx),
-        'roc_mid_log':  pd.Series(roc_mid_log,   index=idx),
-        'roc_long_log': pd.Series(roc_long_log,  index=idx),
-        'mhl':          pd.Series(mhl,           index=idx),
-        'hurst_roc':    pd.Series(hurst_roc,     index=idx),
-        'garr_ratio':   pd.Series(garr_ratio,    index=idx),
-        'accel_fs':     pd.Series(accel_fs,      index=idx),
-        'accel_fm':     pd.Series(accel_fm,      index=idx),
-        'accel_ms':     pd.Series(accel_ms,      index=idx),
-        'jerk':         pd.Series(jerk,          index=idx),
-        'jerk_med':     pd.Series(jerk_med,      index=idx),
-        'geom_curv':    pd.Series(geom_curv,     index=idx),
-        'quad_gamma':   pd.Series(quad_gamma,    index=idx),
-        'lbr_pinball':  pd.Series(lbr_pinball,   index=idx),
-        'phase_wind':   pd.Series(phase_wind,    index=idx),
-        'psr':          pd.Series(psr,           index=idx),
-        'mtsi':         pd.Series(mtsi,          index=idx),
-        'dir_persist':  pd.Series(dir_persist,   index=idx),
-        'rqa_det':      pd.Series(rqa_det,       index=idx),
+    # A11. CMO — Chande Momentum Oscillator  [-100, +100]
+    delta_s = cl_s.diff().fillna(0)
+    sum_up  = delta_s.where(delta_s > 0, 0.0).rolling(n_mid).sum().values
+    sum_dn  = (-delta_s.where(delta_s < 0, 0.0)).rolling(n_mid).sum().values
+    cmo     = ((sum_up - sum_dn) / (sum_up + sum_dn + 1e-10)) * 100
+
+    # A12. LBR Pinball — RSI of ROC_fast  [0, 100]
+    roc_fast_raw = cl_s.pct_change(n_fast).fillna(0) * 100
+    d_pb  = roc_fast_raw.diff()
+    g_pb  = d_pb.where(d_pb > 0, 0.0).rolling(n_fast).mean()
+    l_pb  = (-d_pb.where(d_pb < 0, 0.0)).rolling(n_fast).mean()
+    lbr_pinball = (100 - (100 / (1 + g_pb / (l_pb + 1e-9)))).values
+
+    # ==========================================================================
+    # SHARED INTERMEDIATES
+    # ==========================================================================
+
+    # GARR: log-return concentration  (n_fast rolling sum / n_slow rolling sum)
+    garr = (log_ret.rolling(n_fast).sum() /
+            (log_ret.rolling(n_slow).sum() + 1e-10)).values
+
+    # Kaufman Efficiency Ratio (n_slow window)
+    net_move  = (cl_s - cl_s.shift(n_slow)).abs()
+    sum_steps = cl_s.diff().abs().rolling(n_slow).sum()
+    er        = (net_move / (sum_steps + 1e-10)).values
+
+    # Phase-space coordinates (normalised to n_slow rolling z)
+    roc_fast_s    = pd.Series(roc_fast, index=idx)
+    price_z_nslow = ((cl_s - cl_s.rolling(n_slow).mean()) /
+                     (cl_s.rolling(n_slow).std() + 1e-10)).values.astype(np.float64)
+    roc_z_nslow   = ((roc_fast_s - roc_fast_s.rolling(n_slow).mean()) /
+                     (roc_fast_s.rolling(n_slow).std() + 1e-10)).values.astype(np.float64)
+
+    # ==========================================================================
+    # RATIOS (R1-R5)
+    # ==========================================================================
+
+    # R1. Curve / Half-Life
+    roc_mid_arr     = cl_s.pct_change(n_mid).fillna(0).values * 100
+    half_life_proxy = np.abs(roc_fast) / (np.abs(roc_mid_arr) + 1e-10)
+    curve_halflife  = geom_curv / (half_life_proxy + 1e-10)
+
+    # R2. GARR / ER
+    garr_er = garr / (er + 1e-10)
+
+    # R3. Winding / Persistence
+    phase_wind          = _rolling_phase_winding(price_z_nslow, roc_z_nslow, window=n_slow)
+    winding_persistence = phase_wind / (dir_persist + 1e-10)
+
+    # R4. Pinball / GARR
+    garr_scaled  = np.clip(garr * 100 + 50, 1.0, 100.0)
+    pinball_garr = lbr_pinball / (garr_scaled + 1e-10)
+
+    # R5. Phase Distance / ER
+    dp            = np.diff(price_z_nslow, prepend=price_z_nslow[0])
+    dr            = np.diff(roc_z_nslow,   prepend=roc_z_nslow[0])
+    step_dist     = np.sqrt(dp**2 + dr**2)
+    phase_dist    = pd.Series(step_dist, index=idx).rolling(n_slow).sum().values
+    phase_dist_er = phase_dist / (er + 1e-10)
+
+    # ==========================================================================
+    # SEED DICT  (17 seeds: A1-A12 + R1-R5)
+    # ==========================================================================
+    ALL_SEEDS: dict = {
+        'log_roc_fast':        pd.Series(log_roc_fast,        index=idx),
+        'roc_fast':            pd.Series(roc_fast,            index=idx),
+        'geom_curv':           pd.Series(geom_curv,           index=idx),
+        'rsi':                 pd.Series(rsi,                 index=idx),
+        'cpd_score':           pd.Series(cpd_score,           index=idx),
+        'cmo':                 pd.Series(cmo,                 index=idx),
+        'lbr_pinball':         pd.Series(lbr_pinball,         index=idx),
+        'psr':                 pd.Series(psr,                 index=idx),
+        'ctm':                 pd.Series(ctm,                 index=idx),
+        'octane':              pd.Series(octane,              index=idx),
+        'dir_persist':         pd.Series(dir_persist,         index=idx),
+        'rqa_det':             pd.Series(rqa_det,             index=idx),
+        'curve_halflife':      pd.Series(curve_halflife,      index=idx),
+        'garr_er':             pd.Series(garr_er,             index=idx),
+        'winding_persistence': pd.Series(winding_persistence, index=idx),
+        'pinball_garr':        pd.Series(pinball_garr,        index=idx),
+        'phase_dist_er':       pd.Series(phase_dist_er,       index=idx),
     }
 
-    # ── Apply Z-lens (Physics Trio) to SELECTED seeds only ────────────────────
-    # LENS_{z_n}_{key}_z          → Position   (z-score vs rolling mean/std)
-    # LENS_{z_n}_{key}_z_slope    → Velocity   (rate of change of z)
-    # LENS_{z_n}_{key}_z_sos      → Acceleration / SOS  (turning-point signal)
-    for name, series in SEEDS.items():
+    # ==========================================================================
+    # Z-LENS TRANSFORM  (single z_n window)
+    # z, z_slope, z_sos per selected seed → len(selected) * 3 LENS columns
+    # Bounded seeds use rolling pct-rank as Z base (no z-score)
+    # ==========================================================================
+    for name, series in ALL_SEEDS.items():
         if name not in sel:
             continue
-        arr = series.values.astype(np.float64)
-        rm  = pd.Series(arr, index=idx).rolling(z_n).mean().values
-        rs  = pd.Series(arr, index=idx).rolling(z_n).std().values
-        z   = (arr - rm) / (rs + 1e-9)
-        zs  = _rolling_linslope(z,  z_n)
-        zso = _rolling_linslope(zs, z_n)
+        arr   = series.values.astype(np.float64)
+        arr_s = pd.Series(arr, index=idx)
+        if name in BOUNDED:
+            z = arr_s.rolling(z_n).rank(pct=True).values
+        else:
+            rm = arr_s.rolling(z_n).mean().values
+            rs = arr_s.rolling(z_n).std().values
+            z  = (arr - rm) / (rs + 1e-9)
+        z_s     = pd.Series(z, index=idx)
+        z_slope = z_s.diff().values
+        z_sos   = pd.Series(z_slope, index=idx).diff().values
         df[f'LENS_{z_n}_{name}_z']       = z
-        df[f'LENS_{z_n}_{name}_z_slope'] = zs
-        df[f'LENS_{z_n}_{name}_z_sos']   = zso
-
-    # ── WIN rolling-pct for unbounded / structural seeds (when selected) ───────
-    WIN_SEEDS = {'mhl', 'hurst_roc', 'garr_ratio', 'accel_fs',
-                 'jerk', 'geom_curv', 'quad_gamma', 'phase_wind', 'rqa_det'}
-    win_a = max(5,  z_n // 3)
-    win_b = z_n
-    for name in WIN_SEEDS:
-        if name not in sel:
-            continue
-        arr = SEEDS[name].values
-        for win in [win_a, win_b]:
-            rm = pd.Series(arr, index=idx).rolling(win).mean().values
-            df[f'WIN_{win}_{name}_pct'] = arr / (np.abs(rm) + 1e-9) - 1.0
+        df[f'LENS_{z_n}_{name}_z_slope'] = z_slope
+        df[f'LENS_{z_n}_{name}_z_sos']   = z_sos
 
     return (df.replace([np.inf, -np.inf], np.nan)
               .ffill()
@@ -755,12 +633,9 @@ def load_hybrid_data_parallel(brain_name: str,
     if selected_features is None:
         selected_features = ALL_MOMENTUM_KEYS
 
-    # Minimum bars: need enough for GARR_long and memory windows
-    n_m      = max(10, indicator_n)
-    n_garr_l = max(252, n_m * 12)
-    n_xl     = max(30, indicator_n * 3)
-    n_psr    = max(63, max(20, indicator_n * 2) * 2)
-    min_bars = max(260, n_garr_l + 50, n_psr + 50)
+    # Minimum bars: need enough for memory and PSR windows
+    n_mem    = max(30, indicator_n * 3)
+    min_bars = max(260, n_mem * 4 + 50)
 
     # Worker defined as LOCAL CLOSURE — no pickling, works with ThreadPoolExecutor
     def _worker(args):
@@ -1070,9 +945,6 @@ def run_lookback_tester():
 
     grid = list(itertools.product(ind_list, z_list))
     n_lens_cols = len(selected) * 3   # z, z_slope, z_sos per seed
-    n_win_seeds = len({'mhl','hurst_roc','garr_ratio','accel_fs',
-                       'jerk','geom_curv','quad_gamma','phase_wind','rqa_det'}
-                      & set(selected))
 
     print(f"\n{'─'*72}")
     print(f"  Test window  : {start_date} → {end_date}  (3 years)")
@@ -1080,7 +952,7 @@ def run_lookback_tester():
     print(f"  indicator_n  : {ind_list}")
     print(f"  z_n          : {z_list}")
     print(f"  Combinations : {len(grid)}  ({len(ind_list)} × {len(z_list)})")
-    print(f"  LENS cols    : {n_lens_cols} LENS + {n_win_seeds*2} WIN per pair")
+    print(f"  LENS cols    : {n_lens_cols} per (ind_n, z_n) pair  (no WIN columns)")
     print(f"{'─'*72}\n")
 
     # ── Sample symbols once (same pool for all evals) ─────────────────────────
