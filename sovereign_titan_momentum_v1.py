@@ -274,17 +274,27 @@ def _rolling_rqa_det_v2(arr, window, eps_factor=0.15):
 
 
 def _warm_up_numba():
-    d  = np.random.randn(120).astype(np.float64)
-    d2 = np.random.randn(120).astype(np.float64)
-    _rolling_linslope(d, 10)
-    _rolling_wma(d, 10)
-    _kalman_numba(d)
-    _rsi_nb(d, 14)
-    _rolling_geom_curv(d, d2)
-    _rolling_phase_winding(d, d2, 20)
-    _streak_zscore(d, 30)
-    _rolling_rqa_det_v2(d, 25)
-    print("✅ Numba momentum kernels compiled and ready")
+    # Skip eager warm-up on CPU — Numba will JIT on first real call instead.
+    # Eager compilation hangs in Colab CPU runtimes due to IR analysis overhead.
+    import tensorflow as tf
+    gpus = tf.config.list_physical_devices('GPU')
+    if not gpus:
+        print("⚡ Numba warm-up skipped on CPU (kernels compile on first use)")
+        return
+    try:
+        d  = np.random.randn(120).astype(np.float64)
+        d2 = np.random.randn(120).astype(np.float64)
+        _rolling_linslope(d, 10)
+        _rolling_wma(d, 10)
+        _kalman_numba(d)
+        _rsi_nb(d, 14)
+        _rolling_geom_curv(d, d2)
+        _rolling_phase_winding(d, d2, 20)
+        _streak_zscore(d, 30)
+        _rolling_rqa_det_v2(d, 25)
+        print("✅ Numba momentum kernels compiled and ready")
+    except Exception as e:
+        print(f"⚠️  Numba warm-up skipped: {e}")
 
 _warm_up_numba()
 
