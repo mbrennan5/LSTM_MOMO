@@ -551,21 +551,18 @@ def generate_momentum_features(df: pd.DataFrame) -> pd.DataFrame:
 # ### BLOCK 4: PARALLEL LOADER
 # ==============================================================================
 def fetch_data(symbol):
-    import time
-    for attempt in range(3):
-        try:
-            ticker = yf.Ticker(symbol)
-            data   = ticker.history(period="3y", interval="1d", auto_adjust=True)
-            if data is None or data.empty:
-                return None
-            data.columns = [str(c).lower() for c in data.columns]
-            return data if 'close' in data.columns else None
-        except Exception:
-            if attempt < 2:
-                time.sleep(2 ** attempt)
-    return None
+    try:
+        data = yf.download(symbol, period='3y', interval='1d', progress=False)
+        if data is None or data.empty:
+            return None
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+        data.columns = [str(c).lower() for c in data.columns]
+        return data if 'close' in data.columns else None
+    except Exception:
+        return None
 
-def load_hybrid_data_parallel(brain_name, symbol_list, dl_workers=8):
+def load_hybrid_data_parallel(brain_name, symbol_list, dl_workers=20):
     # Guard: generate_momentum_features must exist before we can process symbols.
     if 'generate_momentum_features' not in globals():
         raise RuntimeError(
