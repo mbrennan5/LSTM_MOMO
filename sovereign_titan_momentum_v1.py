@@ -560,6 +560,23 @@ _YF_SESSION.headers.update({
                   "Chrome/124.0.0.0 Safari/537.36"
 })
 
+def _debug_fetch_one(symbol="SPY"):
+    """Call once to diagnose fetch failures before a full run."""
+    import traceback
+    print(f"\n[DEBUG] Testing fetch for {symbol}...")
+    try:
+        ticker = yf.Ticker(symbol, session=_YF_SESSION)
+        data   = ticker.history(period="1mo", interval="1d", auto_adjust=True)
+        if data is None:
+            print("[DEBUG] Result: None (no exception)")
+        elif data.empty:
+            print("[DEBUG] Result: empty DataFrame (no exception)")
+        else:
+            print(f"[DEBUG] Result: OK — {len(data)} rows, cols={list(data.columns)}")
+    except Exception as e:
+        print(f"[DEBUG] Exception: {type(e).__name__}: {e}")
+        traceback.print_exc()
+
 def fetch_data(symbol):
     import time
     for attempt in range(3):
