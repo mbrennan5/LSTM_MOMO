@@ -665,7 +665,7 @@ def _eval_accuracy(model, X_batch, y_batch):
     return tf.reduce_mean(tf.cast(correct, tf.float32))
 
 def run_judicial_audit(brain_name, master_df, model_type='GRU',
-                       seq_len=10, epochs=50, batch_size=2048):
+                       seq_len=60, epochs=50, batch_size=2048):
     feature_cols = [c for c in master_df.columns
                     if c.startswith('LENS_') or c.startswith('WIN_')]
     n_features   = len(feature_cols)
