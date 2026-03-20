@@ -606,6 +606,7 @@ def generate_momentum_features_v2(df: pd.DataFrame,
 def fetch_data(symbol: str,
                start: str | None = None,
                end:   str | None = None) -> pd.DataFrame | None:
+    # ── Primary: yf.download ──────────────────────────────────────────────────
     try:
         kw = dict(interval='1d', progress=False)
         if start and end:
@@ -613,13 +614,34 @@ def fetch_data(symbol: str,
         else:
             kw['period'] = '3y'
         data = yf.download(symbol, **kw)
-        if data.empty: return None
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
-        data.columns = [str(c).lower() for c in data.columns]
-        return data if 'close' in data.columns else None
+        if data is not None and not data.empty:
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+            data.columns = [str(c).lower() for c in data.columns]
+            if 'close' in data.columns:
+                return data
     except Exception:
-        return None
+        pass
+
+    # ── Fallback: pandas_datareader / Stooq (works when Yahoo blocks Colab) ──
+    try:
+        from pandas_datareader import data as pdr
+        if start and end:
+            s = pd.Timestamp(start)
+            e = pd.Timestamp(end)
+        else:
+            e = pd.Timestamp.today()
+            s = e - pd.DateOffset(years=3)
+        data = pdr.get_data_stooq(symbol, start=s, end=e)
+        if data is not None and not data.empty:
+            data = data.sort_index()
+            data.columns = [str(c).lower() for c in data.columns]
+            if 'close' in data.columns:
+                return data
+    except Exception:
+        pass
+
+    return None
 
 
 def load_hybrid_data_parallel(brain_name: str,

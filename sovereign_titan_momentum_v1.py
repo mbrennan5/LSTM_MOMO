@@ -551,16 +551,33 @@ def generate_momentum_features(df: pd.DataFrame) -> pd.DataFrame:
 # ### BLOCK 4: PARALLEL LOADER
 # ==============================================================================
 def fetch_data(symbol):
+    # ── Primary: yf.download ──────────────────────────────────────────────────
     try:
         data = yf.download(symbol, period='3y', interval='1d', progress=False)
-        if data is None or data.empty:
-            return None
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
-        data.columns = [str(c).lower() for c in data.columns]
-        return data if 'close' in data.columns else None
+        if data is not None and not data.empty:
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+            data.columns = [str(c).lower() for c in data.columns]
+            if 'close' in data.columns:
+                return data
     except Exception:
-        return None
+        pass
+
+    # ── Fallback: pandas_datareader / Stooq (works when Yahoo blocks Colab) ──
+    try:
+        from pandas_datareader import data as pdr
+        end   = pd.Timestamp.today()
+        start = end - pd.DateOffset(years=3)
+        data  = pdr.get_data_stooq(symbol, start=start, end=end)
+        if data is not None and not data.empty:
+            data = data.sort_index()
+            data.columns = [str(c).lower() for c in data.columns]
+            if 'close' in data.columns:
+                return data
+    except Exception:
+        pass
+
+    return None
 
 def load_hybrid_data_parallel(brain_name, symbol_list, dl_workers=20):
     # Guard: generate_momentum_features must exist before we can process symbols.
