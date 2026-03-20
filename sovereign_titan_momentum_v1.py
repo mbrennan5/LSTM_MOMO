@@ -554,12 +554,12 @@ def fetch_data(symbol):
     import time
     for attempt in range(3):
         try:
-            data = yf.download(symbol, period="3y", interval="1d",
-                               progress=False, auto_adjust=True)
+            # Ticker.history() is more robust than yf.download() —
+            # avoids the NoneType subscript bug from malformed API responses.
+            ticker = yf.Ticker(symbol)
+            data   = ticker.history(period="3y", interval="1d", auto_adjust=True)
             if data is None or data.empty:
                 return None
-            if isinstance(data.columns, pd.MultiIndex):
-                data.columns = data.columns.get_level_values(0)
             data.columns = [str(c).lower() for c in data.columns]
             return data if 'close' in data.columns else None
         except Exception:
