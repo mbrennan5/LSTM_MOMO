@@ -92,6 +92,10 @@ os.makedirs(OUTPUT_DRIVE_DIR, exist_ok=True)
 N_FEATURE_WORKERS = max(1, (os.cpu_count() or 2))
 print(f"[SYSTEM] Feature generation workers: {N_FEATURE_WORKERS}")
 
+_perm_ans = input("Include Permutation scoring? (y/n, default=y): ").strip().lower()
+USE_PERMUTATION_SCORING = (_perm_ans != 'n')
+print(f"[CONFIG] Permutation scoring: {'ENABLED' if USE_PERMUTATION_SCORING else 'DISABLED'}\n")
+
 TITAN_SYMBOLS = [
     'AA','AAL','AAPL','ABNB','ACWI','AEM','AFRM','AI','ALAB','ALB','AMAT','AMD','AMZN',
     'ANET','APA','APH','ARKK','AVGO','BA','BABA','BAC','BKR','BLDR','C','CARR','CAT',
@@ -708,19 +712,22 @@ def run_judicial_audit(brain_name, master_df, model_type='GRU',
     baseline_acc = _eval_accuracy(model, X_val_tf, y_val_tf).numpy()
     print(f"  [MODEL] Baseline val accuracy: {baseline_acc:.4f}")
     report_rows = []
-    for fi, feat_name in enumerate(tqdm(feature_cols, desc="Permutation scoring")):
-        try:
-            X_perm = X_val.copy()
-            flat   = X_perm[:, :, fi].flatten()
-            np.random.shuffle(flat)
-            X_perm[:, :, fi] = flat.reshape(X_perm[:, :, fi].shape)
-            perm_acc = _eval_accuracy(model, tf.constant(X_perm), y_val_tf).numpy()
-            report_rows.append({
-                'Feature': feat_name,
-                'I_raw':   max(0.0, baseline_acc - perm_acc),
-            })
-        except Exception:
-            report_rows.append({'Feature': feat_name, 'I_raw': 0.0})
+    if USE_PERMUTATION_SCORING:
+        for fi, feat_name in enumerate(tqdm(feature_cols, desc="Permutation scoring")):
+            try:
+                X_perm = X_val.copy()
+                flat   = X_perm[:, :, fi].flatten()
+                np.random.shuffle(flat)
+                X_perm[:, :, fi] = flat.reshape(X_perm[:, :, fi].shape)
+                perm_acc = _eval_accuracy(model, tf.constant(X_perm), y_val_tf).numpy()
+                report_rows.append({
+                    'Feature': feat_name,
+                    'I_raw':   max(0.0, baseline_acc - perm_acc),
+                })
+            except Exception:
+                report_rows.append({'Feature': feat_name, 'I_raw': 0.0})
+    else:
+        print("  [CONFIG] Permutation scoring skipped.")
     del model; gc.collect(); tf.keras.backend.clear_session()
     return pd.DataFrame(report_rows)
 

@@ -87,6 +87,10 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 N_FEATURE_WORKERS = max(1, (os.cpu_count() or 2))
 print(f"[SYSTEM] Feature workers: {N_FEATURE_WORKERS}")
 
+_perm_ans = input("Include Permutation scoring? (y/n, default=y): ").strip().lower()
+USE_PERMUTATION_SCORING = (_perm_ans != 'n')
+print(f"[CONFIG] Permutation scoring: {'ENABLED' if USE_PERMUTATION_SCORING else 'DISABLED'}\n")
+
 TITAN_SYMBOLS = [
     'AA','AAL','AAPL','ABNB','ACWI','AEM','AFRM','AI','ALAB','ALB','AMAT','AMD','AMZN',
     'ANET','APA','APH','ARKK','AVGO','BA','BABA','BAC','BKR','BLDR','C','CARR','CAT',
@@ -791,16 +795,19 @@ def run_judicial_audit(brain_name, master_df, model_type='GRU',
     print(f"  [MODEL] Baseline val accuracy: {baseline_acc:.4f}")
 
     rows = []
-    for fi, fname in enumerate(tqdm(feat_cols, desc="Permutation scoring")):
-        try:
-            Xp = X_val.copy()
-            flat = Xp[:, :, fi].flatten()
-            np.random.shuffle(flat)
-            Xp[:, :, fi] = flat.reshape(Xp[:, :, fi].shape)
-            pa = float(_eval_accuracy(model, tf.constant(Xp), yvt).numpy())
-            rows.append({'Feature': fname, 'I_raw': max(0.0, baseline_acc - pa)})
-        except Exception:
-            rows.append({'Feature': fname, 'I_raw': 0.0})
+    if USE_PERMUTATION_SCORING:
+        for fi, fname in enumerate(tqdm(feat_cols, desc="Permutation scoring")):
+            try:
+                Xp = X_val.copy()
+                flat = Xp[:, :, fi].flatten()
+                np.random.shuffle(flat)
+                Xp[:, :, fi] = flat.reshape(Xp[:, :, fi].shape)
+                pa = float(_eval_accuracy(model, tf.constant(Xp), yvt).numpy())
+                rows.append({'Feature': fname, 'I_raw': max(0.0, baseline_acc - pa)})
+            except Exception:
+                rows.append({'Feature': fname, 'I_raw': 0.0})
+    else:
+        print("  [CONFIG] Permutation scoring skipped.")
 
     del model; gc.collect(); tf.keras.backend.clear_session()
     return pd.DataFrame(rows), baseline_acc
