@@ -60,7 +60,7 @@ print(f"[SYSTEM] Active compute device: {DEVICE}\n")
 # ==============================================================================
 # ### BLOCK 1: SYSTEM INITIALIZATION
 # ==============================================================================
-import numpy as np, pandas as pd, yfinance as yf, requests as _requests
+import numpy as np, pandas as pd, yfinance as yf
 import multiprocessing as mp
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from tensorflow.keras.models import Sequential
@@ -550,38 +550,11 @@ def generate_momentum_features(df: pd.DataFrame) -> pd.DataFrame:
 # ==============================================================================
 # ### BLOCK 4: PARALLEL LOADER
 # ==============================================================================
-# Plain requests session bypasses curl_cffi's browser-impersonation layer,
-# which breaks when the installed curl_cffi doesn't support the required
-# Chrome version (manifests as "Impersonating chromeXXX is not supported").
-_YF_SESSION = _requests.Session()
-_YF_SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/124.0.0.0 Safari/537.36"
-})
-
-def _debug_fetch_one(symbol="SPY"):
-    """Call once to diagnose fetch failures before a full run."""
-    import traceback
-    print(f"\n[DEBUG] Testing fetch for {symbol}...")
-    try:
-        ticker = yf.Ticker(symbol, session=_YF_SESSION)
-        data   = ticker.history(period="1mo", interval="1d", auto_adjust=True)
-        if data is None:
-            print("[DEBUG] Result: None (no exception)")
-        elif data.empty:
-            print("[DEBUG] Result: empty DataFrame (no exception)")
-        else:
-            print(f"[DEBUG] Result: OK — {len(data)} rows, cols={list(data.columns)}")
-    except Exception as e:
-        print(f"[DEBUG] Exception: {type(e).__name__}: {e}")
-        traceback.print_exc()
-
 def fetch_data(symbol):
     import time
     for attempt in range(3):
         try:
-            ticker = yf.Ticker(symbol, session=_YF_SESSION)
+            ticker = yf.Ticker(symbol)
             data   = ticker.history(period="3y", interval="1d", auto_adjust=True)
             if data is None or data.empty:
                 return None
@@ -589,7 +562,7 @@ def fetch_data(symbol):
             return data if 'close' in data.columns else None
         except Exception:
             if attempt < 2:
-                time.sleep(2 ** attempt)   # 1s, 2s back-off
+                time.sleep(2 ** attempt)
     return None
 
 def load_hybrid_data_parallel(brain_name, symbol_list, dl_workers=8):
