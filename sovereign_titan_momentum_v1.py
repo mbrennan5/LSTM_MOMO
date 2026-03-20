@@ -94,25 +94,53 @@ print(f"[SYSTEM] Feature generation workers: {N_FEATURE_WORKERS}")
 
 _perm_ans = input("Include Permutation scoring? (y/n, default=y): ").strip().lower()
 USE_PERMUTATION_SCORING = (_perm_ans != 'n')
-print(f"[CONFIG] Permutation scoring: {'ENABLED' if USE_PERMUTATION_SCORING else 'DISABLED'}\n")
+if USE_PERMUTATION_SCORING:
+    _grp_ans = input("Use family-grouped permutation for faster runs? (y/n, default=n): ").strip().lower()
+    USE_FAMILY_GROUPED_PERM = (_grp_ans == 'y')
+else:
+    USE_FAMILY_GROUPED_PERM = False
+print(f"[CONFIG] Permutation scoring : {'ENABLED' if USE_PERMUTATION_SCORING else 'DISABLED'}")
+print(f"[CONFIG] Family-grouped perm : {'ENABLED' if USE_FAMILY_GROUPED_PERM else 'DISABLED'}\n")
 
 TITAN_SYMBOLS = [
-    'AA','AAL','AAPL','ABNB','ACWI','AEM','AFRM','AI','ALAB','ALB','AMAT','AMD','AMZN',
-    'ANET','APA','APH','ARKK','AVGO','BA','BABA','BAC','BKR','BLDR','C','CARR','CAT',
-    'CCJ','CCL','CE','CELH','CLF','CLSK','CMG','CNC','CPRT','CRM','CSCO','CSX','CVS',
-    'CVX','DAL','DDOG','DHR','DIA','DIS','DKNG','DLTR','DOW','DVN','DXCM','EA','EBAY',
-    'EEM','EMR','EQT','EWJ','EWT','EWW','EWY','EWZ','EXC','F','FANG','FCX','FITB',
-    'FTNT','FTV','FXI','GBTC','GDX','GDXJ','GEHC','GFS','GIS','GOOG','GOOGL','GS',
-    'HAL','HOOD','HPE','HPQ','HWM','IAU','IBM','IGV','IJH','IJR','INTC','IP','IR',
-    'IWM','IYR','JNJ','KDP','KMI','KO','KRE','KWEB','LOW','LRCX','LUV','LVS','LYFT',
-    'MAR','MARA','MCHP','MGM','MNST','MPC','MRK','MRNA','MRVL','MS','MSFT','MSTR',
-    'MU','NCLH','NEE','NEM','NKE','NUE','NVDA','NVO','NXPI','ON','ORCL','OXY','PANW',
-    'PCAR','PDD','PEP','PFE','PINS','PLTR','PYPL','QCOM','QQQ','QQQM','RBLX','RIOT',
-    'RIVN','RTX','SBUX','SCHW','SHOP','SJM','SLB','SLV','SMCI','SMH','SNAP','SNOW',
-    'SOFI','SOXX','SPLG','SPY','TER','TGT','TJX','TLT','TMUS','TQQQ','TSCO','TSLA',
-    'TTD','TTWO','TWLO','TXN','U','UAL','UBER','UPS','USB','USO','VLO','VNQ','VRT',
-    'VST','VT','VTR','WMT','WYNN','XBI','XLB','XLC','XLE','XLF','XLI','XLK','XLP',
-    'XLRE','XLU','XLV','XLY','XOM','XOP','XRT'
+    # Broad market anchors
+    'SPY','IWM','DIA','QQQ','VT','ACWI',
+    # Sector ETFs (one per sector)
+    'XLK','XLF','XLE','XLV','XLI','XLY','XLP','XLB','XLU','XLC','XLRE',
+    # Momentum / growth ETFs
+    'ARKK','SMH','IGV','XBI',
+    # International / EM
+    'EEM','EWZ','EWJ','EWY','FXI','KWEB',
+    # Fixed income & alternatives
+    'TLT','IYR','VNQ','GDX','SLV','USO','IAU',
+    # Mega-cap tech
+    'AAPL','MSFT','AMZN','GOOG',
+    # High-beta / momentum single names
+    'NVDA','TSLA','AMD','MSTR','PLTR','SHOP',
+    # Semis (least-correlated pair after NVDA/AMD)
+    'AMAT','TXN',
+    # Financials
+    'GS','SCHW','PYPL',
+    # Energy
+    'XOM','DVN','VLO',
+    # Industrials / defense
+    'CAT','RTX','UPS',
+    # Healthcare
+    'JNJ','MRK','DXCM',
+    # Consumer
+    'WMT','SBUX','NKE',
+    # China ADRs
+    'BABA','PDD',
+    # Crypto-adjacent
+    'MARA','GBTC',
+    # Small / mid-cap cyclicals
+    'FCX','CLF','AA',
+    # High-vol speculative
+    'CELH','HOOD','SNAP','UBER','TSCO',
+    # Telecom / media
+    'TMUS','DIS',
+    # REITs / rate-sensitive
+    'NEE','VTR',
 ]
 
 
@@ -700,7 +728,7 @@ def run_judicial_audit(brain_name, master_df, model_type='GRU',
         model.fit(
             train_ds, validation_data=val_ds, epochs=epochs,
             callbacks=[
-                EarlyStopping(monitor='val_loss', patience=5,
+                EarlyStopping(monitor='val_loss', patience=8,
                               restore_best_weights=True),
                 ReduceLROnPlateau(monitor='val_loss', factor=0.5,
                                   patience=3, min_lr=1e-5),
@@ -713,19 +741,36 @@ def run_judicial_audit(brain_name, master_df, model_type='GRU',
     print(f"  [MODEL] Baseline val accuracy: {baseline_acc:.4f}")
     report_rows = []
     if USE_PERMUTATION_SCORING:
-        for fi, feat_name in enumerate(tqdm(feature_cols, desc="Permutation scoring")):
-            try:
-                X_perm = X_val.copy()
-                flat   = X_perm[:, :, fi].flatten()
-                np.random.shuffle(flat)
-                X_perm[:, :, fi] = flat.reshape(X_perm[:, :, fi].shape)
-                perm_acc = _eval_accuracy(model, tf.constant(X_perm), y_val_tf).numpy()
-                report_rows.append({
-                    'Feature': feat_name,
-                    'I_raw':   max(0.0, baseline_acc - perm_acc),
-                })
-            except Exception:
-                report_rows.append({'Feature': feat_name, 'I_raw': 0.0})
+        if USE_FAMILY_GROUPED_PERM:
+            groups = _group_features_by_family(feature_cols)
+            for family, indices in tqdm(groups.items(), desc="Permutation scoring (family)"):
+                try:
+                    X_perm = X_val.copy()
+                    for fi in indices:
+                        flat = X_perm[:, :, fi].flatten()
+                        np.random.shuffle(flat)
+                        X_perm[:, :, fi] = flat.reshape(X_perm[:, :, fi].shape)
+                    perm_acc = _eval_accuracy(model, tf.constant(X_perm), y_val_tf).numpy()
+                    drop = max(0.0, baseline_acc - perm_acc)
+                    for fi in indices:
+                        report_rows.append({'Feature': feature_cols[fi], 'I_raw': drop})
+                except Exception:
+                    for fi in indices:
+                        report_rows.append({'Feature': feature_cols[fi], 'I_raw': 0.0})
+        else:
+            for fi, feat_name in enumerate(tqdm(feature_cols, desc="Permutation scoring")):
+                try:
+                    X_perm = X_val.copy()
+                    flat   = X_perm[:, :, fi].flatten()
+                    np.random.shuffle(flat)
+                    X_perm[:, :, fi] = flat.reshape(X_perm[:, :, fi].shape)
+                    perm_acc = _eval_accuracy(model, tf.constant(X_perm), y_val_tf).numpy()
+                    report_rows.append({
+                        'Feature': feat_name,
+                        'I_raw':   max(0.0, baseline_acc - perm_acc),
+                    })
+                except Exception:
+                    report_rows.append({'Feature': feat_name, 'I_raw': 0.0})
     else:
         print("  [CONFIG] Permutation scoring skipped.")
     del model; gc.collect(); tf.keras.backend.clear_session()
@@ -760,6 +805,23 @@ def _parse_feature_name(f):
         lookback  = f'{prefix}_{window}_{indicator}'
         return prefix, window, lookback, family
     return None, None, f, f
+
+def _group_features_by_family(feature_cols):
+    """Group feature column indices by indicator family (strips window, transforms, digits)."""
+    from collections import defaultdict
+    TRANSFORM_TOKENS = {'z', 'slope', 'sos', 'pct'}
+    groups = defaultdict(list)
+    for fi, fname in enumerate(feature_cols):
+        parts = fname.split('_')
+        if len(parts) > 2 and parts[0] in ('LENS', 'WIN'):
+            remainder = list(parts[2:])
+            while remainder and remainder[-1] in TRANSFORM_TOKENS:
+                remainder.pop()
+            family = '_'.join(p for p in remainder if not p.isdigit())
+        else:
+            family = fname
+        groups[family].append(fi)
+    return dict(groups)
 
 def apply_sovereign_hunt(ledger_df, master_data_df, brain_name, max_slots=19):
     locked_list = BRAIN_LOCKS.get(brain_name, [])
