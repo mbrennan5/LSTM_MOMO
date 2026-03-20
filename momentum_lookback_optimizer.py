@@ -118,7 +118,7 @@ TITAN_SYMBOLS = [
 # Pillars: Mismatch (7) | Regime (6) | Structure (4)
 #
 # Window scaling from indicator_n:
-#   n_fast = max(2, n_s // 2)   where n_s = max(5, indicator_n // 2)
+#   n_fast = 2   (fixed)
 #   n_mid  = max(10, indicator_n)
 #   n_slow = max(10, n_mid + n_s)
 #   n_mem  = max(30, indicator_n * 3)
@@ -360,7 +360,7 @@ _warm_up_numba()
 #
 # indicator_n  — primary lookback; scales all momentum windows:
 #   n_s    = max(5,  indicator_n // 2)
-#   n_fast = max(2,  n_s // 2)       ~3  at indicator_n=14
+#   n_fast = 2   (fixed)
 #   n_mid  = max(10, indicator_n)     =   indicator_n
 #   n_slow = max(10, n_mid + n_s)    ~21 at indicator_n=14
 #   n_mem  = max(30, indicator_n*3)  ~63 at indicator_n=21
@@ -413,7 +413,7 @@ def generate_momentum_features_v2(df: pd.DataFrame,
 
     # ── Window scaling ─────────────────────────────────────────────────────────
     n_s    = max(5,  indicator_n // 2)
-    n_fast = max(2,  n_s // 2)          # ~3  at indicator_n=14
+    n_fast = 2                           # fixed lookback
     n_mid  = max(10, indicator_n)        # = indicator_n
     n_slow = max(10, n_mid + n_s)        # ~21 at indicator_n=14
     n_mem  = max(30, indicator_n * 3)    # ~63 at indicator_n=21

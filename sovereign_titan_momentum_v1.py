@@ -310,7 +310,7 @@ _warm_up_numba()
 # Each seed → triple lens [10, 30, 90] × {z, z_slope, z_sos} = 153 columns
 #
 # Parameters:
-#   n_fast = 3   |  n_mid = 14  |  n_slow = 21  |  n_mem = 63
+#   n_fast = 2   |  n_mid = 14  |  n_slow = 21  |  n_mem = 63
 #   epsilon_rqa  = 0.15
 #   LENS_WINDOWS = [10, 30, 90]
 #   BOUNDED      = {rsi, cmo, lbr_pinball, octane, dir_persist}
@@ -361,7 +361,7 @@ def generate_momentum_features(df: pd.DataFrame) -> pd.DataFrame:
     vol_s = pd.Series(vol, index=idx)
 
     # ── Parameters ────────────────────────────────────────────────────────────
-    n_fast       = 3
+    n_fast       = 2
     n_mid        = 14
     n_slow       = 21
     n_mem        = 63
