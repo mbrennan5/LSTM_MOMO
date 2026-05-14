@@ -374,8 +374,8 @@ def _psr_welch(roc_arr: np.ndarray, window: int, f_low_period: int) -> np.ndarra
 
 def generate_momentum_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    # Label: did price go UP vs previous bar (no look-ahead)
-    df['T_FINAL'] = np.where(df['close'] > df['close'].shift(1), 1, 0)
+    # Label: will price be higher tomorrow? (next-bar direction, aligned with seq end)
+    df['T_FINAL'] = np.where(df['close'].shift(-1) > df['close'], 1, 0)
 
     cl  = df['close'].values.astype(np.float64)
     hi  = df['high'].values.astype(np.float64)
