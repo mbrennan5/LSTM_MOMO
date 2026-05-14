@@ -701,22 +701,42 @@ def _eval_accuracy(model, X_batch, y_batch):
                        tf.cast(y_batch, tf.int32))
     return tf.reduce_mean(tf.cast(correct, tf.float32))
 
+def _build_sequences_per_symbol(master_df, feature_cols, seq_len, train_frac=0.8):
+    """
+    Build sequences strictly within each symbol's time series, then split
+    chronologically inside each symbol before combining.  This prevents any
+    sequence from spanning two different tickers and ensures val rows are
+    always later in time than the corresponding train rows for every symbol.
+    """
+    tr_X, tr_y, va_X, va_y = [], [], [], []
+    sym_col = 'symbol' if 'symbol' in master_df.columns else None
+    groups  = master_df.groupby(sym_col) if sym_col else [('ALL', master_df)]
+    for _, grp in groups:
+        grp = grp.sort_index()
+        X   = grp[feature_cols].values.astype(np.float32)
+        y   = grp['T_FINAL'].values.astype(np.float32)
+        if len(X) <= seq_len:
+            continue
+        seqs = np.stack([X[i - seq_len:i] for i in range(seq_len, len(X))])
+        lbls = y[seq_len:]
+        cut  = int(len(seqs) * train_frac)
+        if cut == 0 or cut == len(seqs):
+            continue
+        tr_X.append(seqs[:cut]);  tr_y.append(lbls[:cut])
+        va_X.append(seqs[cut:]);  va_y.append(lbls[cut:])
+    return (np.concatenate(tr_X), np.concatenate(tr_y),
+            np.concatenate(va_X), np.concatenate(va_y))
+
 def run_judicial_audit(brain_name, master_df, model_type='GRU',
                        seq_len=60, epochs=50, batch_size=2048):
     feature_cols = [c for c in master_df.columns
                     if c.startswith('LENS_') or c.startswith('WIN_')]
     n_features   = len(feature_cols)
-    raw_X    = master_df[feature_cols].values.astype(np.float32)
-    y_raw    = master_df['T_FINAL'].values.astype(np.float32)
-    n        = len(raw_X)
-    X_seqs   = np.stack([raw_X[i - seq_len:i] for i in range(seq_len, n)])
-    y_seqs   = y_raw[seq_len:]
-    split        = int(len(X_seqs) * 0.8)
-    X_tr, X_val  = X_seqs[:split], X_seqs[split:]
-    y_tr, y_val  = y_seqs[:split], y_seqs[split:]
+    X_tr, y_tr, X_val, y_val = _build_sequences_per_symbol(
+        master_df, feature_cols, seq_len)
     # Fit scaler on train only, then apply to both — prevents val stats leaking in
-    scaler   = RobustScaler()
-    sh = X_tr.shape
+    scaler = RobustScaler()
+    sh  = X_tr.shape
     X_tr  = scaler.fit_transform(X_tr.reshape(-1, sh[-1])).reshape(sh).astype(np.float32)
     sh2 = X_val.shape
     X_val = scaler.transform(X_val.reshape(-1, sh2[-1])).reshape(sh2).astype(np.float32)
