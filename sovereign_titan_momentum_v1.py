@@ -45,7 +45,7 @@ def setup_gpu():
         return False
     for gpu in gpus:
         tf.config.experimental.set_memory_growth(gpu, True)
-    tf.keras.mixed_precision.set_global_policy('mixed_float16')
+    tf.keras.mixed_precision.set_global_policy('mixed_bfloat16')
     print(f"✅ Mixed precision: {tf.keras.mixed_precision.global_policy().name}")
     with tf.device('/device:GPU:0'):
         _ = tf.random.normal((10, 10)) @ tf.random.normal((10, 10))
@@ -683,13 +683,13 @@ def build_full_model(model_type, n_features, seq_len, device=DEVICE):
             Input(shape=(seq_len, n_features)),
             GRU(128,  return_sequences=True) if model_type == 'GRU'
                 else LSTM(128, return_sequences=True),
-            Dropout(0.2),
+            Dropout(0.3),
             GRU(64) if model_type == 'GRU' else LSTM(64),
-            Dropout(0.2),
+            Dropout(0.3),
             Dense(32, activation='relu'),
             Dense(1,  activation='sigmoid', dtype='float32'),
         ])
-        model.compile(optimizer=Adam(1e-3),
+        model.compile(optimizer=Adam(1e-3, clipnorm=1.0),
                       loss='binary_crossentropy',
                       metrics=['accuracy'])
     return model
