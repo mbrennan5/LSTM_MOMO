@@ -374,7 +374,8 @@ def _psr_welch(roc_arr: np.ndarray, window: int, f_low_period: int) -> np.ndarra
 
 def generate_momentum_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df['T_FINAL'] = np.where(df['close'].shift(-1) > df['close'], 1, 0)
+    # Label: did price go UP vs previous bar (no look-ahead)
+    df['T_FINAL'] = np.where(df['close'] > df['close'].shift(1), 1, 0)
 
     cl  = df['close'].values.astype(np.float64)
     hi  = df['high'].values.astype(np.float64)
@@ -705,17 +706,20 @@ def run_judicial_audit(brain_name, master_df, model_type='GRU',
     feature_cols = [c for c in master_df.columns
                     if c.startswith('LENS_') or c.startswith('WIN_')]
     n_features   = len(feature_cols)
-    scaler   = RobustScaler()
-    X_scaled = scaler.fit_transform(
-        master_df[feature_cols].values
-    ).astype(np.float32)
+    raw_X    = master_df[feature_cols].values.astype(np.float32)
     y_raw    = master_df['T_FINAL'].values.astype(np.float32)
-    n        = len(X_scaled)
-    X_seqs   = np.stack([X_scaled[i - seq_len:i] for i in range(seq_len, n)])
+    n        = len(raw_X)
+    X_seqs   = np.stack([raw_X[i - seq_len:i] for i in range(seq_len, n)])
     y_seqs   = y_raw[seq_len:]
     split        = int(len(X_seqs) * 0.8)
     X_tr, X_val  = X_seqs[:split], X_seqs[split:]
     y_tr, y_val  = y_seqs[:split], y_seqs[split:]
+    # Fit scaler on train only, then apply to both — prevents val stats leaking in
+    scaler   = RobustScaler()
+    sh = X_tr.shape
+    X_tr  = scaler.fit_transform(X_tr.reshape(-1, sh[-1])).reshape(sh).astype(np.float32)
+    sh2 = X_val.shape
+    X_val = scaler.transform(X_val.reshape(-1, sh2[-1])).reshape(sh2).astype(np.float32)
     print(f"  [DATA] train={len(X_tr):,}  val={len(X_val):,}  features={n_features}")
     AUTO     = tf.data.AUTOTUNE
     train_ds = (tf.data.Dataset.from_tensor_slices((X_tr, y_tr))
